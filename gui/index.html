@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Athena Voice — Conrad CJ Wilson</title>
+<style>
+  :root {
+    --bg: #0a0b10;
+    --accent: #8b7dff;
+    --cyan: #22d3ee;
+    --processing: #f59e0b;
+    --error: #ff6a75;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: system-ui, sans-serif;
+    color: #f5f6fa;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at 50% 30%, #1a1c28, var(--bg) 70%);
+  }
+  #orb-wrap {
+    position: relative;
+    width: 280px; height: 280px;
+  }
+  #orb {
+    width: 100%; height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--accent), #4a3db8 60%, #1a1535);
+    box-shadow: 0 0 60px rgba(139,125,255,0.3), 0 0 120px rgba(139,125,255,0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+  }
+  #orb.speaking { animation: pulse 1.2s ease-in-out infinite; }
+  #orb.processing { box-shadow: 0 0 60px rgba(245,158,11,0.4); }
+  #orb.error { box-shadow: 0 0 60px rgba(255,106,117,0.4); background: radial-gradient(circle at 35% 35%, var(--error), #5a1a20 60%, #2a0a0d); }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+  #status {
+    margin-top: 24px;
+    text-align: center;
+    font-size: 13px;
+    color: #8a8f9c;
+    letter-spacing: 0.3px;
+  }
+  footer {
+    position: fixed;
+    bottom: 8px; left: 0; right: 0;
+    text-align: center;
+    font-size: 11px;
+    color: #555;
+  }
+  footer a { color: #777; text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+  <div style="text-align:center;">
+    <div id="orb-wrap"><div id="orb"></div></div>
+    <div id="status">Click to connect</div>
+  </div>
+  <footer>Built by <a href="https://github.com/cjps4linux-creator">Conrad CJ Wilson</a></footer>
+  <script>
+(function () {
+  'use strict';
+
+  // ---- State ----
+  const IDLE = 'idle';
+  const CONNECTING = 'connecting';
+  const LISTENING = 'listening';
+  const PROCESSING = 'processing';
+  const SPEAKING = 'speaking';
+  const ERROR = 'error';
+
+  let state = IDLE;
+  let ws = null;
+  let audioCtx = null;
+  let micStream = null;
+  let analyser = null;
+  let scriptNode = null;
+  let outputNode = null;
+  let running = false;
+
+  const orb = document.getElementById('orb');
+  const statusEl = document.getElementById('status');
+
+  // ---- Helpers ----
+  function setState(s) {
+    state = s;
+    orb.className = '';
+    if (s === SPEAKING) orb.classList.add('speaking');
+    if (s === PROCESSING) orb.classList.add('processing');
+    if (s === ERROR) orb.classList.add('error');
+    const labels = {
+      [IDLE]: 'Click to connect',
+      [CONNECTING]: 'Connecting...',
+      [LISTENING]: 'Listening...',
+      [PROCESSING]: 'Processing...',
+      [SPEAKING]: 'Speaking...',
+      [ERROR]: 'Connection failed',
+    };
+    statusEl.textContent = labels[s] || s;
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = localStorage.getItem('s2s_host') || '127.0.0.1';
+    const port = localStorage.getItem('s2s_port') || '8765';
+    const url = proto + '//' + host + ':' + port + '/ws';
+    setState(CONNECTING);
+
+    try {
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+    } catch (e) {
+      console.error('[gui] connect error', e);
+      setState(ERROR);
+      return;
+    }
+
+    ws.onopen = function () {
+      console.log('[gui] connected');
+      setState(LISTENING);
+      startMic();
+    };
+
+    ws.onmessage = function (evt) {
+      if (typeof evt.data === 'string') {
+        console.log('[gui] msg:', evt.data);
+        if (evt.data === 'user_speech_start') {
+          setState(LISTENING);
+        } else if (evt.data === 'assistant_speech_start') {
+          setState(SPEAKING);
+        } else if (evt.data === 'assistant_speech_end') {
+          setState(LISTENING);
+        }
+        return;
+      }
+      playChunk(evt.data);
+    };
+
+    ws.onerror = function (err) {
+      console.error('[gui] ws error', err);
+      setState(ERROR);
+    };
+
+    ws.onclose = function () {
+      console.log('[gui] disconnected');
+      stopMic();
+      setState(IDLE);
+      running = false;
+    };
+  }
+
+  function disconnect() {
+    stopMic();
+    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+    setState(IDLE);
+    running = false;
+  }
+
+  // ---- Audio Input ----
+  async function startMic() {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 24000 },
+      });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+      const source = audioCtx.createMediaStreamSource(micStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      const bufferSize = 4096;
+      scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+      scriptNode.onaudiaprocess = function (e) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const input = e.inputBuffer.getChannelData(0);
+        const pcm = floatTo16BitPCM(input);
+        ws.send(pcm);
+      };
+      source.connect(scriptNode);
+      scriptNode.connect(audioCtx.destination);
+      console.log('[gui] mic started');
+    } catch (err) {
+      console.error('[gui] mic error', err);
+      setState(ERROR);
+    }
+  }
+
+  function stopMic() {
+    if (scriptNode) { try { scriptNode.disconnect(); } catch (_) {} scriptNode = null; }
+    if (analyser) { try { analyser.disconnect(); } catch (_) {} analyser = null; }
+    if (micStream) { micStream.getTracks().forEach(function (t) { t.stop(); }); micStream = null; }
+    if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
+  }
+
+  // ---- Audio Output ----
+  let outputBuffer = [];
+  let outputSampleRate = 24000;
+
+  function playChunk(arrayBuf) {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: outputSampleRate });
+    }
+    const int16 = new Int16Array(arrayBuf);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+    const buf = audioCtx.createBuffer(1, float32.length, outputSampleRate);
+    buf.getChannelData(0).set(float32);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.onstart = function () { setState(SPEAKING); };
+    src.onended = function () {
+      if (state === SPEAKING) setState(LISTENING);
+    };
+    src.start();
+  }
+
+  // ---- Utils ----
+  function floatTo16BitPCM(float32) {
+    const buf = new ArrayBuffer(float32.length * 2);
+    const view = new DataView(buf);
+    for (let i = 0; i < float32.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return buf;
+  }
+
+  // ---- Click toggle ----
+  document.addEventListener('click', function (e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (running) { disconnect(); } else { running = true; connect(); }
+  });
+
+  // Initial state
+  setState(IDLE);
+})();
+</script>
+</body>
+</html>
