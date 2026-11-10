@@ -1,6 +1,6 @@
 # Athena Voice
 
-**Real-time speech-to-speech voice agent — WebSocket client for OpenAI Realtime-compatible backends.**
+**Real-time speech-to-speech voice agent  -  WebSocket client for OpenAI Realtime-compatible backends.**
 
 Built by Conrad CJ Wilson as part of the Hermes AI ecosystem. Demonstrates WebSocket-based voice orchestration: 24 kHz audio streaming, server-side VAD, interrupt-response handling, and OpenAI Realtime API compatibility.
 
@@ -68,15 +68,15 @@ Open `gui/index.html` in a browser for the visual interface. The GUI connects to
 
 ## Security
 
-- **Never commit `.env`** — it contains API keys
-- Use `.env.example` as a template with placeholder values
+- **Never commit `.env`**  -  it contains API keys
+- Use `.env.example` as a template with [content pending] values
 - API keys are loaded from environment variables only
 - Default host binds to `127.0.0.1` (localhost only)
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT  -  see [LICENSE](LICENSE)
 
 ## Author
 
-Conrad CJ Wilson — [@cjps4linux-creator](https://github.com/cjps4linux-creator)
+Conrad CJ Wilson  -  [@cjps4linux-creator](https://github.com/cjps4linux-creator)
